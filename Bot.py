@@ -1,12 +1,13 @@
-# ================== BingX Signal Bot (Render/GitHub one-file) ==================
+# ================== BingX Signal Bot (Render long-running) ==================
 # Indicators: EMA20/50/200, CCI(20), MACD(12,26,9), KDJ(9,3,3), BB(20,2), Volume
-# Entry: Pullback tới EMA20/BB basis (one-sided range). SL: ATR + structure, kẹp theo leverage.
-# TP: RR ladder. Score filter >= 70. Chống trùng. Ghim ✅ bằng edit tin gốc + reply TP/SL (ước tính PnL).
-# ------------------------------------------------------------------------------
+# Entry: Pullback EMA20/BB basis. SL: ATR + structure, kẹp theo leverage.
+# TP: RR ladder. Score >=70. Chống trùng. Edit tin gốc để ghim ✅ + reply TP/SL (ước tính PnL).
+# Tương thích Render Web Service: có HTTP keep-alive để không bị shutdown.
+# ---------------------------------------------------------------------------
 
-import os, time, traceback, warnings
+import os, time, traceback, warnings, threading, socketserver
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from datetime import datetime, timezone
-
 warnings.filterwarnings("ignore")
 
 # ============== DEPS ==============
@@ -19,11 +20,11 @@ except Exception:
 
 # ================== CONFIG ==================
 EXCHANGE_ID        = "bingx"
-MARKET_TYPE        = "swap"              # "spot" hoặc "swap"
+MARKET_TYPE        = "swap"              # "spot" or "swap"
 QUOTE              = "USDT"
 ENTRY_TF           = "15m"
 LOOKBACK_BARS      = 360
-PAIRS_LIMIT        = 80                  # 0 = tất cả
+PAIRS_LIMIT        = 80                  # 0 = all
 SLEEP_SECONDS      = 20
 
 # Indicators
@@ -35,7 +36,7 @@ BB_LEN, BB_STD = 20, 2.0
 VOL_MA_LEN, VOL_FACTOR = 20, 1.2
 USE_MACD_DIVERGENCE = True
 
-# Scoring filter
+# Scoring
 MIN_SCORE_TO_ALERT  = 80
 
 # Risk & Leverage aware
@@ -48,12 +49,12 @@ ATR_MULT_SL         = 1.8
 # Entry range (one-sided)
 ENTRY_RANGE_DOWN_PCT = 0.003             # BUY: entry_low = entry*(1-0.3%), entry_high = entry
 ENTRY_RANGE_UP_PCT   = 0.003             # SELL: entry_low = entry, entry_high = entry*(1+0.3%)
-MIN_TP_GAP_PCT       = 0.001             # 0.1% để TP1 nằm ngoài vùng entry
+MIN_TP_GAP_PCT       = 0.001             # 0.1% để TP1 luôn ngoài vùng entry
 
 # RR ladder
 RR_LEVELS           = [1.0, 1.5, 2.0, 2.5, 3.0]
 
-# Telegram (Render ENV: TELEGRAM_TOKEN, CHAT_ID)
+# Telegram (Render ENV)
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.environ.get("CHAT_ID", "").strip()
 
@@ -65,7 +66,6 @@ def fmt6(x):
     try:
         v = float(x)
         if v == 0: return "0"
-        # Giữ độ động cho coin giá rất nhỏ
         if abs(v) < 1e-3: return f"{v:.8f}"
         return f"{v:.6f}"
     except:
@@ -347,24 +347,28 @@ last_signal = {}   # {"SYMBOL": "BUY"/"SELL"}
 open_trades = {}   # {"SYMBOL": {"side":..., "plan":..., "msg_id":..., "score":..., "reasons":[...]}}
 last_ts = {}
 
-def run():
+def bot_loop():
+    """Vòng lặp vô hạn của bot (không thoát)."""
     ex = make_ex()
     syms = list_syms(ex)
+    send_message("🚀 Bot đã khởi động trên Render (long-running).")
     print(f"[init] symbols={len(syms)} | TF={ENTRY_TF} | lev={LEVERAGE}x")
 
     while True:
         try:
             for sym in syms:
                 df_raw = fetch_df(ex, sym)
-                if df_raw is None: continue
+                if df_raw is None: 
+                    continue
 
-                # chỉ xử lý nến đóng
-                ts = df_raw["ts"].iloc[-2]
-                if last_ts.get(sym)==ts: continue
+                ts = df_raw["ts"].iloc[-2]  # chỉ xử lý khi nến đã đóng
+                if last_ts.get(sym)==ts: 
+                    continue
                 last_ts[sym]=ts
 
                 df = compute_indicators(df_raw)
-                if len(df)<220: continue
+                if len(df)<220: 
+                    continue
                 row = df.iloc[-2]
 
                 # Lọc trend/volume để giảm nhiễu
@@ -434,11 +438,30 @@ def run():
 
             time.sleep(SLEEP_SECONDS)
 
-        except KeyboardInterrupt:
-            print("⛔ Stopped by user"); break
         except Exception as e:
-            print("Loop error:", e); traceback.print_exc(); time.sleep(5)
+            print("Loop error:", e)
+            traceback.print_exc()
+            time.sleep(5)
+
+# ================== KEEP-ALIVE HTTP (Render Web Service) ==================
+class _Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        msg = f"OK {now_utc_iso()}"
+        self.send_response(200); self.send_header("Content-type", "text/plain"); self.end_headers()
+        self.wfile.write(msg.encode())
+
+    def log_message(self, format, *args):  # tắt log rác
+        return
+
+def start_http_server():
+    port = int(os.environ.get("PORT", "10000"))
+    httpd = HTTPServer(("0.0.0.0", port), _Handler)
+    print(f"[http] keep-alive on :{port}")
+    httpd.serve_forever()
 
 # ================== START ==================
 if __name__ == "__main__":
-    run()
+    # Chạy HTTP keep-alive ở 1 thread để Render không kill
+    threading.Thread(target=start_http_server, daemon=True).start()
+    # Chạy bot loop vô hạn
+    bot_loop()
