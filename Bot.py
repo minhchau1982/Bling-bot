@@ -456,12 +456,16 @@ def run():
         except KeyboardInterrupt:
             print("⛔ Stopped by user"); break
         except Exception as e:
-            print("Loop error:", e); traceback.print_exc(); time.sleep(5)
-
-# ================== START ==================
-if __name__ == "__main__":
-from flask import Flask
+            print("Loop error:", e); traceback.print_exc(); time.sleep(from flask import Flask
 import threading
+
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+# ================== START ==================
+from flask import Flask
+import threading, os
 
 app = Flask(__name__)
 
@@ -469,9 +473,14 @@ app = Flask(__name__)
 def home():
     return "✅ Bot is running on Render!"
 
+def start_bot():
+    run()  # vòng lặp quét chính
+
 if __name__ == "__main__":
-    # chạy bot trong thread riêng
-    t = threading.Thread(target=run)
+    # Chạy bot ở thread riêng để Flask còn mở cổng cho Render
+    t = threading.Thread(target=start_bot, daemon=True)
     t.start()
-    # mở port 10000 để Render detect
-    app.run(host="0.0.0.0", port=10000)
+
+    # Render thường truyền PORT qua biến môi trường
+    port = int(os.environ.get("PORT", "10000"))
+    app.run(host="0.0.0.0", port=port)
