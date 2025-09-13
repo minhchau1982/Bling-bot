@@ -23,7 +23,7 @@ MARKET_TYPE        = "swap"              # "spot" hoặc "swap"
 QUOTE              = "USDT"
 ENTRY_TF           = "15m"
 LOOKBACK_BARS      = 360
-PAIRS_LIMIT        = 200                 # 0 = tất cả
+PAIRS_LIMIT        = 100                 # 0 = tất cả
 SLEEP_SECONDS      = 10                  # chu kỳ quét
 
 # Indicators
