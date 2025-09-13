@@ -1,12 +1,11 @@
-# ================== BingX Signal Bot (Render long-running) ==================
+# ================== BingX Signal Bot (Render/GitHub one-file) ==================
 # Indicators: EMA20/50/200, CCI(20), MACD(12,26,9), KDJ(9,3,3), BB(20,2), Volume
-# Entry: Pullback EMA20/BB basis. SL: ATR + structure, kẹp theo leverage.
-# TP: RR ladder. Score >=70. Chống trùng. Edit tin gốc để ghim ✅ + reply TP/SL (ước tính PnL).
-# Tương thích Render Web Service: có HTTP keep-alive để không bị shutdown.
-# ---------------------------------------------------------------------------
+# Entry: Pullback tới EMA20/BB basis (one-sided range). SL: ATR + structure, kẹp theo leverage.
+# TP: RR ladder. Score filter >= 70. Chống trùng. Ghim ✅ bằng edit tin gốc + reply TP/SL (ước tính PnL).
+# Thêm: "ENTRY filled" khi giá vào vùng ENTRY; chỉ TP/SL sau khi đã khớp entry.
+# ------------------------------------------------------------------------------
 
-import os, time, traceback, warnings, threading, socketserver
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import os, time, traceback, warnings
 from datetime import datetime, timezone
 warnings.filterwarnings("ignore")
 
@@ -20,12 +19,12 @@ except Exception:
 
 # ================== CONFIG ==================
 EXCHANGE_ID        = "bingx"
-MARKET_TYPE        = "swap"              # "spot" or "swap"
+MARKET_TYPE        = "swap"              # "spot" hoặc "swap"
 QUOTE              = "USDT"
 ENTRY_TF           = "15m"
 LOOKBACK_BARS      = 360
-PAIRS_LIMIT        = 80                  # 0 = all
-SLEEP_SECONDS      = 10
+PAIRS_LIMIT        = 200                 # 0 = tất cả
+SLEEP_SECONDS      = 10                  # chu kỳ quét
 
 # Indicators
 MA_SHORT, MA_MID, MA_LONG = 20, 50, 200
@@ -36,25 +35,25 @@ BB_LEN, BB_STD = 20, 2.0
 VOL_MA_LEN, VOL_FACTOR = 20, 1.2
 USE_MACD_DIVERGENCE = True
 
-# Scoring
+# Scoring filter
 MIN_SCORE_TO_ALERT  = 80
 
-# Risk & Leverage aware
-LEVERAGE            = 20                 # chỉ để tính PnL ước tính (bot KHÔNG đặt lệnh)
+# Risk & Leverage aware (chỉ để tính PnL ước tính; bot KHÔNG đặt lệnh)
+LEVERAGE            = 20
 MIN_SL_PCT          = max(0.002, 0.25 / LEVERAGE)  # ~1.25% cho 20x
-MAX_SL_PCT          = 0.60 / LEVERAGE               # ~3.0% cho 20x
+MAX_SL_PCT          = 0.60 / LEVERAGE              # ~3.0% cho 20x
 ATR_LEN             = 14
 ATR_MULT_SL         = 1.8
 
 # Entry range (one-sided)
 ENTRY_RANGE_DOWN_PCT = 0.003             # BUY: entry_low = entry*(1-0.3%), entry_high = entry
 ENTRY_RANGE_UP_PCT   = 0.003             # SELL: entry_low = entry, entry_high = entry*(1+0.3%)
-MIN_TP_GAP_PCT       = 0.001             # 0.1% để TP1 luôn ngoài vùng entry
+MIN_TP_GAP_PCT       = 0.001             # 0.1% để TP1 nằm ngoài vùng entry
 
 # RR ladder
 RR_LEVELS           = [1.0, 1.5, 2.0, 2.5, 3.0]
 
-# Telegram (Render ENV)
+# Telegram (Render ENV: TELEGRAM_TOKEN, CHAT_ID)
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.environ.get("CHAT_ID", "").strip()
 
@@ -233,7 +232,7 @@ def build_trade_plan(df, side, entry_close):
 
     if side=="BUY":
         entry_anchor = max(float(r["ma_s"]), float(r["bb_basis"]))
-        entry = min(float(entry_close), entry_anchor)
+        entry = min(float(entry_close), entry_anchor)           # không đuổi quá cao
         entry_low  = entry * (1 - ENTRY_RANGE_DOWN_PCT)
         entry_high = entry
         swing = last_swing_low(df)
@@ -243,7 +242,7 @@ def build_trade_plan(df, side, entry_close):
         sl = max(sl, entry - entry*MAX_SL_PCT)
     else:
         entry_anchor = min(float(r["ma_s"]), float(r["bb_basis"]))
-        entry = max(float(entry_close), entry_anchor)
+        entry = max(float(entry_close), entry_anchor)           # không bán quá thấp
         entry_low  = entry
         entry_high = entry * (1 + ENTRY_RANGE_UP_PCT)
         swing = last_swing_high(df)
@@ -267,7 +266,8 @@ def build_trade_plan(df, side, entry_close):
         "sl": sl,
         "tps": tps,
         "hit": [False]*len(tps),
-        "risk_dist": risk
+        "risk_dist": risk,
+        "entered": False,       # KHỚP ENTRY?
     }
 
 def plan_is_valid(side, plan):
@@ -281,9 +281,10 @@ LEVERAGE_TEXT = f"LEV/{LEVERAGE}X"
 
 def format_signal(sym, side, plan, score, reasons):
     emoji = "🟢" if side=="BUY" else "🔴"
+    entry_mark = "✅" if plan.get("entered") else "⏳"
     lines = [
         f"{emoji} <b>{side}</b> #{sym}  {LEVERAGE_TEXT}",
-        f"ENTRY {fmt6(plan['entry_low'])}–{fmt6(plan['entry_high'])}",
+        f"ENTRY {fmt6(plan['entry_low'])}–{fmt6(plan['entry_high'])} {entry_mark}",
         f"STOPLOSS {fmt6(plan['sl'])}",
         "TARGET"
     ]
@@ -295,6 +296,12 @@ def format_signal(sym, side, plan, score, reasons):
         lines += [f"Lý do: {', '.join(reasons)}"]
     lines += [f"🕒 {now_utc_iso()}"]
     return "\n".join(lines)
+
+def format_entry_reply(sym, side, plan, px):
+    icon = "🟢" if side == "BUY" else "🔴"
+    return (f"{icon} <b>ENTRY filled</b> #{sym} @ {fmt6(px)}\n"
+            f"Range {fmt6(plan['entry_low'])}–{fmt6(plan['entry_high'])}\n"
+            f"SL {fmt6(plan['sl'])}")
 
 def format_tp_reply(sym, side, plan, i_hit, px):
     spot, lev = est_profit_pct(plan["entry"], plan["tps"][i_hit], side, leverage=LEVERAGE)
@@ -347,28 +354,24 @@ last_signal = {}   # {"SYMBOL": "BUY"/"SELL"}
 open_trades = {}   # {"SYMBOL": {"side":..., "plan":..., "msg_id":..., "score":..., "reasons":[...]}}
 last_ts = {}
 
-def bot_loop():
-    """Vòng lặp vô hạn của bot (không thoát)."""
+def run():
     ex = make_ex()
     syms = list_syms(ex)
-    send_message("🚀 Bot đã khởi động trên Render (long-running).")
     print(f"[init] symbols={len(syms)} | TF={ENTRY_TF} | lev={LEVERAGE}x")
 
     while True:
         try:
             for sym in syms:
                 df_raw = fetch_df(ex, sym)
-                if df_raw is None: 
-                    continue
+                if df_raw is None: continue
 
-                ts = df_raw["ts"].iloc[-2]  # chỉ xử lý khi nến đã đóng
-                if last_ts.get(sym)==ts: 
-                    continue
+                # chỉ xử lý khi nến đã đóng
+                ts = df_raw["ts"].iloc[-2]
+                if last_ts.get(sym)==ts: continue
                 last_ts[sym]=ts
 
                 df = compute_indicators(df_raw)
-                if len(df)<220: 
-                    continue
+                if len(df)<220: continue
                 row = df.iloc[-2]
 
                 # Lọc trend/volume để giảm nhiễu
@@ -400,68 +403,61 @@ def bot_loop():
                     px    = float(row["close"])
                     changed = False
 
-                    # SL trước
-                    if trade["side"]=="BUY" and px <= plan["sl"]:
-                        send_message(format_sl_reply(sym, trade["side"], plan, px), reply_to=trade["msg_id"])
-                        del open_trades[sym]
-                        continue
-                    if trade["side"]=="SELL" and px >= plan["sl"]:
-                        send_message(format_sl_reply(sym, trade["side"], plan, px), reply_to=trade["msg_id"])
-                        del open_trades[sym]
-                        continue
+                    # 1) KHỚP ENTRY (một lần)
+                    if not plan["entered"]:
+                        in_range = plan["entry_low"] <= px <= plan["entry_high"]
+                        if in_range:
+                            plan["entered"] = True
+                            changed = True
+                            send_message(format_entry_reply(sym, trade["side"], plan, px),
+                                         reply_to=trade["msg_id"])
 
-                    # TP ladder + trailing SL
-                    for i,tp in enumerate(plan["tps"]):
-                        if not plan["hit"][i]:
-                            if (trade["side"]=="BUY" and px>=tp) or (trade["side"]=="SELL" and px<=tp):
-                                plan["hit"][i]=True; changed=True
-                                send_message(format_tp_reply(sym, trade["side"], plan, i, px),
-                                             reply_to=trade["msg_id"])
-                                # Move SL: TP1 -> entry, TP2 -> TP1
-                                if i>=0:
-                                    if trade["side"]=="BUY":
-                                        plan["sl"] = max(plan["sl"], plan["entry"])
-                                    else:
-                                        plan["sl"] = min(plan["sl"], plan["entry"])
-                                if i>=1:
-                                    if trade["side"]=="BUY":
-                                        plan["sl"] = max(plan["sl"], plan["tps"][0])
-                                    else:
-                                        plan["sl"] = min(plan["sl"], plan["tps"][0])
+                    # 2) Chỉ quản lý SL/TP SAU khi đã khớp entry
+                    if plan["entered"]:
+                        # SL trước
+                        if trade["side"]=="BUY" and px <= plan["sl"]:
+                            send_message(format_sl_reply(sym, trade["side"], plan, px), reply_to=trade["msg_id"])
+                            del open_trades[sym]
+                            continue
+                        if trade["side"]=="SELL" and px >= plan["sl"]:
+                            send_message(format_sl_reply(sym, trade["side"], plan, px), reply_to=trade["msg_id"])
+                            del open_trades[sym]
+                            continue
 
+                        # TP ladder + trailing SL
+                        for i,tp in enumerate(plan["tps"]):
+                            if not plan["hit"][i]:
+                                if (trade["side"]=="BUY" and px>=tp) or (trade["side"]=="SELL" and px<=tp):
+                                    plan["hit"][i]=True; changed=True
+                                    send_message(format_tp_reply(sym, trade["side"], plan, i, px),
+                                                 reply_to=trade["msg_id"])
+                                    # Move SL: TP1 -> entry, TP2 -> TP1
+                                    if i>=0:
+                                        if trade["side"]=="BUY":
+                                            plan["sl"] = max(plan["sl"], plan["entry"])
+                                        else:
+                                            plan["sl"] = min(plan["sl"], plan["entry"])
+                                    if i>=1:
+                                        if trade["side"]=="BUY":
+                                            plan["sl"] = max(plan["sl"], plan["tps"][0])
+                                        else:
+                                            plan["sl"] = min(plan["sl"], plan["tps"][0])
+
+                    # 3) Cập nhật tin gốc khi vừa khớp entry hoặc chạm TP
                     if changed:
                         edit_message(trade["msg_id"],
                                      format_signal(sym, trade["side"], plan, trade["score"], trade["reasons"]))
-                        if all(plan["hit"]):
+                        if plan["entered"] and all(plan["hit"]):
                             send_message(format_all_done(sym, trade["side"], plan), reply_to=trade["msg_id"])
                             del open_trades[sym]
 
             time.sleep(SLEEP_SECONDS)
 
+        except KeyboardInterrupt:
+            print("⛔ Stopped by user"); break
         except Exception as e:
-            print("Loop error:", e)
-            traceback.print_exc()
-            time.sleep(5)
-
-# ================== KEEP-ALIVE HTTP (Render Web Service) ==================
-class _Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        msg = f"OK {now_utc_iso()}"
-        self.send_response(200); self.send_header("Content-type", "text/plain"); self.end_headers()
-        self.wfile.write(msg.encode())
-
-    def log_message(self, format, *args):  # tắt log rác
-        return
-
-def start_http_server():
-    port = int(os.environ.get("PORT", "10000"))
-    httpd = HTTPServer(("0.0.0.0", port), _Handler)
-    print(f"[http] keep-alive on :{port}")
-    httpd.serve_forever()
+            print("Loop error:", e); traceback.print_exc(); time.sleep(5)
 
 # ================== START ==================
 if __name__ == "__main__":
-    # Chạy HTTP keep-alive ở 1 thread để Render không kill
-    threading.Thread(target=start_http_server, daemon=True).start()
-    # Chạy bot loop vô hạn
-    bot_loop()
+    run()
