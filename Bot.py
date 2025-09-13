@@ -12,10 +12,13 @@ warnings.filterwarnings("ignore")
 # ============== DEPS ==============
 try:
     import ccxt, pandas as pd, numpy as np, requests
+    from flask import Flask
 except Exception:
     import sys, subprocess
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "ccxt", "pandas", "numpy", "requests"])
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q",
+                           "ccxt", "pandas", "numpy", "requests", "flask"])
     import ccxt, pandas as pd, numpy as np, requests
+    from flask import Flask
 
 # ================== CONFIG ==================
 EXCHANGE_ID        = "bingx"
@@ -412,7 +415,7 @@ def run():
                             send_message(format_entry_reply(sym, trade["side"], plan, px),
                                          reply_to=trade["msg_id"])
 
-                    # 2) Chỉ quản lý SL/TP SAU khi đã khớp entry
+                    # 2) Quản lý TP/SL chỉ sau khi đã khớp entry
                     if plan["entered"]:
                         # SL trước
                         if trade["side"]=="BUY" and px <= plan["sl"]:
@@ -443,7 +446,7 @@ def run():
                                         else:
                                             plan["sl"] = min(plan["sl"], plan["tps"][0])
 
-                    # 3) Cập nhật tin gốc khi vừa khớp entry hoặc chạm TP
+                    # 3) Cập nhật tin gốc khi có thay đổi
                     if changed:
                         edit_message(trade["msg_id"],
                                      format_signal(sym, trade["side"], plan, trade["score"], trade["reasons"]))
@@ -456,21 +459,19 @@ def run():
         except KeyboardInterrupt:
             print("⛔ Stopped by user"); break
         except Exception as e:
-            print("Loop error:", e); traceback.print_exc(); time.sleep(from flask import Flask
-       # ================== START ==================
+            print("Loop error:", e)
+            traceback.print_exc()
+            time.sleep(5)
+
+# ================== START (Flask keep-alive cho Render) ==================
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "✅ Bot is running on Render!"
+
 if __name__ == "__main__":
     import threading
-    from flask import Flask
-
-    app = Flask(__name__)
-
-    @app.route("/")
-    def home():
-        return "✅ Bot is running on Render!"
-
-    # chạy bot trong thread riêng để vừa chạy Flask vừa chạy vòng lặp bot
-    t = threading.Thread(target=run)
+    t = threading.Thread(target=run, daemon=True)
     t.start()
-
-    # mở port 10000 để Render detect service
     app.run(host="0.0.0.0", port=10000)
