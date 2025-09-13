@@ -25,7 +25,7 @@ QUOTE              = "USDT"
 ENTRY_TF           = "15m"
 LOOKBACK_BARS      = 360
 PAIRS_LIMIT        = 80                  # 0 = all
-SLEEP_SECONDS      = 20
+SLEEP_SECONDS      = 10
 
 # Indicators
 MA_SHORT, MA_MID, MA_LONG = 20, 50, 200
