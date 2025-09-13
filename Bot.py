@@ -457,30 +457,20 @@ def run():
             print("⛔ Stopped by user"); break
         except Exception as e:
             print("Loop error:", e); traceback.print_exc(); time.sleep(from flask import Flask
-import threading
-
-app = Flask(__name__)
-
-@app.route("/")
-def home():
-# ================== START ==================
-from flask import Flask
-import threading, os
-
-app = Flask(__name__)
-
-@app.route("/")
-def home():
-    return "✅ Bot is running on Render!"
-
-def start_bot():
-    run()  # vòng lặp quét chính
-
+       # ================== START ==================
 if __name__ == "__main__":
-    # Chạy bot ở thread riêng để Flask còn mở cổng cho Render
-    t = threading.Thread(target=start_bot, daemon=True)
+    import threading
+    from flask import Flask
+
+    app = Flask(__name__)
+
+    @app.route("/")
+    def home():
+        return "✅ Bot is running on Render!"
+
+    # chạy bot trong thread riêng để vừa chạy Flask vừa chạy vòng lặp bot
+    t = threading.Thread(target=run)
     t.start()
 
-    # Render thường truyền PORT qua biến môi trường
-    port = int(os.environ.get("PORT", "10000"))
-    app.run(host="0.0.0.0", port=port)
+    # mở port 10000 để Render detect service
+    app.run(host="0.0.0.0", port=10000)
