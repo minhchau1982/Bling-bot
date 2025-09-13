@@ -1,0 +1,13 @@
+name: Keep Alive
+
+on:
+  schedule:
+    - cron: "*/1 * * * *"   # chạy mỗi 1 phút
+  workflow_dispatch:        # có thể chạy thủ công từ tab Actions
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Curl Render
+        run: curl -s https://bling-bot.onrender.com/ > /dev/null
