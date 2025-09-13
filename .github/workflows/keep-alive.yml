@@ -2,7 +2,7 @@ name: Keep Alive
 
 on:
   schedule:
-    - cron: "*/1 * * * *"   # chạy mỗi 1 phút
+    - cron: "*/3 * * * *"   # chạy mỗi 1 phút
   workflow_dispatch:        # có thể chạy thủ công từ tab Actions
 
 jobs:
